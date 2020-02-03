@@ -3,8 +3,6 @@ Upstream-Name: diic
 Upstream-Contact: Daniel Morandini <danielmorandini@me.com>
 Source: github.com/jecoz/diic
 
-# Sample paragraph, commented out:
-#
-# Files: src/*
-# Copyright: $YEAR $NAME <$CONTACT>
-# License: ...
+Files: examples/*
+Copyright: 2020 Daniel Morandini <danielmorandini@me.com>
+License: MIT
