@@ -1,0 +1,14 @@
+{
+  "error": {
+    "code": 403,
+    "message": "Request throttled due to daily limit being reached.",
+    "errors": [
+      {
+        "message": "Request throttled due to daily limit being reached.",
+        "domain": "usageLimits",
+        "reason": "dailyLimitExceeded"
+      }
+    ],
+    "status": "RESOURCE_EXHAUSTED"
+  }
+}
