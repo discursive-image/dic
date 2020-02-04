@@ -75,6 +75,18 @@ func decodeISR(r io.Reader) ([]*ISR, error) {
 	return res.Items, nil
 }
 
+func decodeError(r io.Reader) error {
+	var res struct {
+		Error struct {
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.NewDecoder(r).Decode(&res); err != nil {
+		return fmt.Errorf("unable to decode response: %w", err)
+	}
+	return fmt.Errorf(res.Error.Message)
+}
+
 const (
 	ImgTypeClipart = "clipart"
 	ImgTypeFace    = "face"
@@ -154,5 +166,8 @@ func (c *SC) SearchImages(ctx context.Context, q string, opts ...func(url.Values
 	}
 	defer resp.Body.Close()
 
+	if resp.StatusCode != http.StatusOK {
+		return nil, decodeError(resp.Body)
+	}
 	return decodeISR(resp.Body)
 }
