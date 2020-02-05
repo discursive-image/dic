@@ -220,7 +220,7 @@ func main() {
 	t := flag.String("t", "undefined", "Image type to search for (clipart|face|lineart|news|photo).")
 	s := flag.String("s", "undefined", "Image size to search for (huge|icon|large|medium|small|xlarge|xxlarge).")
 	i := flag.String("i", "-", "Input file containing the words to retrive the image of. csv encoded, use the \"c\" flag to select the proper column. If \"q\" is present, this flag is ignored. Use - for stdin.")
-	c := flag.Int("c", 0, "If \"i\" is used, selects the column which will be used as word input.")
+	c := flag.Int("c", 2, "If \"i\" is used, selects the column which will be used as word input.")
 	raddr := flag.String("ra", "", "Redis address to connect to. If available, will be used as link cache.")
 	rdb := flag.Int("rdb", 1, "Redis DB.")
 	flag.Parse()
