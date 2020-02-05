@@ -7,6 +7,7 @@ package main
 import (
 	"context"
 	"encoding/csv"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -25,7 +26,7 @@ func errorf(format string, args ...interface{}) {
 
 func exitf(format string, args ...interface{}) {
 	errorf(format, args...)
-	os.Exit(-1)
+	os.Exit(1)
 }
 
 func handleQSearch(ctx context.Context, gsc *google.SC, q string, opts ...func(url.Values)) {
@@ -75,8 +76,14 @@ func (r *RecW) get(k string) (string, bool) {
 	if r.cache == nil {
 		return "", false
 	}
+
 	val, err := r.cache.Get(makeKey(k)).Result()
+	if err != nil && errors.Is(err, redis.Nil) {
+		// Key not set.
+		return "", false
+	}
 	if err != nil {
+		// Unexpected error.
 		errorf("unable to read from cache: %v", err)
 		return "", false
 	}
@@ -165,6 +172,10 @@ func handleSSearch(ctx context.Context, gsc *google.SC, cache *redis.Client, in 
 	csvr := csv.NewReader(r)
 	sem := make(chan struct{}, maxcc)
 	tx := make(chan *RecW)
+
+	if cache == nil {
+		panic(fmt.Errorf("nil cache!"))
+	}
 
 	go enqueueRecW(ctx, tx)
 
