@@ -180,7 +180,7 @@ func handleSSearch(ctx context.Context, gsc *google.SC, cache *redis.Client, in 
 			rec:   rec,
 			gsc:   gsc,
 			done:  make(chan bool),
-			cache: nil,
+			cache: cache,
 		}
 		ctx, cancel := context.WithTimeout(ctx, time.Second*5)
 		defer cancel()
