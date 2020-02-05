@@ -17,7 +17,7 @@ import (
 	"time"
 
 	"github.com/go-redis/redis/v7"
-	"github.com/jecoz/diic/google"
+	"github.com/jecoz/dic/google"
 )
 
 func errorf(format string, args ...interface{}) {

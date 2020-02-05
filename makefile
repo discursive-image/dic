@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: MIT
 
-diic: cmd/main.go
+dic: cmd/main.go
 	go build -v -o bin/$@ $^
 test:
 	go test ./...
