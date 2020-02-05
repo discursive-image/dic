@@ -12,10 +12,11 @@ import (
 	"io"
 	"net/url"
 	"os"
+	"path/filepath"
 	"time"
 
+	"github.com/go-redis/redis/v7"
 	"github.com/jecoz/diic/google"
-	"github.com/patrickmn/go-cache"
 )
 
 func errorf(format string, args ...interface{}) {
@@ -52,29 +53,6 @@ func openInputFile(in string) (io.ReadCloser, error) {
 	return file, nil
 }
 
-type lcache struct {
-	i *cache.Cache
-}
-
-func newCache() *lcache {
-	return &lcache{
-		i: cache.New(time.Minute*5, time.Minute*5),
-	}
-}
-
-func (c *lcache) Get(s string) (string, bool) {
-	raw, ok := c.i.Get(s)
-	if !ok {
-		return "", ok
-	}
-	link, ok := raw.(string)
-	return link, ok
-}
-
-func (c *lcache) Set(k, v string) {
-	c.i.SetDefault(k, v)
-}
-
 const maxcc int = 10
 
 type RecW struct {
@@ -84,7 +62,36 @@ type RecW struct {
 	opts  []func(url.Values)
 	done  chan bool
 	err   error
-	cache *lcache
+	cache *redis.Client
+}
+
+var keyPrefix = filepath.Base(os.Args[0])
+
+func makeKey(k string) string {
+	return keyPrefix + ":" + k
+}
+
+func (r *RecW) get(k string) (string, bool) {
+	if r.cache == nil {
+		return "", false
+	}
+	val, err := r.cache.Get(makeKey(k)).Result()
+	if err != nil {
+		errorf("unable to read from cache: %v", err)
+		return "", false
+	}
+	return val, true
+}
+
+func (r *RecW) set(k, v string) {
+	if r.cache == nil {
+		return
+	}
+	if err := r.cache.Set(makeKey(k), v, 0).Err(); err != nil {
+		errorf("unable to set cache value: %v", err)
+		return
+	}
+	return
 }
 
 func (r *RecW) Run(ctx context.Context) {
@@ -97,7 +104,7 @@ func (r *RecW) Run(ctx context.Context) {
 	k := r.rec[r.c]
 
 	// Check if the cache contains the value.
-	link, ok := r.cache.Get(k)
+	link, ok := r.get(k)
 	if ok {
 		r.rec = append(r.rec, link)
 		return
@@ -114,7 +121,7 @@ func (r *RecW) Run(ctx context.Context) {
 		return
 	}
 	link = items[0].Link
-	r.cache.Set(k, link)
+	r.set(k, link)
 	r.rec = append(r.rec, items[0].Link)
 }
 
@@ -144,7 +151,8 @@ func enqueueRecW(ctx context.Context, rx chan *RecW) {
 	}
 }
 
-func handleSSearch(ctx context.Context, gsc *google.SC, in string, c int, opts ...func(url.Values)) {
+// cache can be nil.
+func handleSSearch(ctx context.Context, gsc *google.SC, cache *redis.Client, in string, c int, opts ...func(url.Values)) {
 	r, err := openInputFile(in)
 	if err != nil {
 		exitf(err.Error())
@@ -157,7 +165,6 @@ func handleSSearch(ctx context.Context, gsc *google.SC, in string, c int, opts .
 	csvr := csv.NewReader(r)
 	sem := make(chan struct{}, maxcc)
 	tx := make(chan *RecW)
-	cache := newCache()
 
 	go enqueueRecW(ctx, tx)
 
@@ -173,7 +180,7 @@ func handleSSearch(ctx context.Context, gsc *google.SC, in string, c int, opts .
 			rec:   rec,
 			gsc:   gsc,
 			done:  make(chan bool),
-			cache: cache,
+			cache: nil,
 		}
 		ctx, cancel := context.WithTimeout(ctx, time.Second*5)
 		defer cancel()
@@ -199,13 +206,27 @@ func main() {
 	s := flag.String("s", "undefined", "Image size to search for (huge|icon|large|medium|small|xlarge|xxlarge).")
 	i := flag.String("i", "-", "Input file containing the words to retrive the image of. csv encoded, use the \"c\" flag to select the proper column. If \"q\" is present, this flag is ignored. Use - for stdin.")
 	c := flag.Int("c", 0, "If \"i\" is used, selects the column which will be used as word input.")
+	raddr := flag.String("ra", "", "Redis address to connect to. If available, will be used as link cache.")
+	rdb := flag.Int("rdb", 1, "Redis DB.")
 	flag.Parse()
+
+	var client *redis.Client
+	if *raddr != "" {
+		client = redis.NewClient(&redis.Options{
+			Addr:     *raddr,
+			Password: "",
+			DB:       *rdb,
+		})
+		if _, err := client.Ping().Result(); err != nil {
+			exitf("unable to connect to redis server: %v", err)
+		}
+	}
 
 	ctx := context.Background()
 	gsc := google.NewSC(*k, *cx)
 	if *q != "" {
 		handleQSearch(ctx, gsc, *q, google.FilterImgType(*t), google.FilterImgSize(*s))
 	} else {
-		handleSSearch(ctx, gsc, *i, *c, google.FilterImgType(*t), google.FilterImgSize(*s))
+		handleSSearch(ctx, gsc, client, *i, *c, google.FilterImgType(*t), google.FilterImgSize(*s))
 	}
 }
