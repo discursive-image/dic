@@ -125,8 +125,10 @@ func (r *RecW) Run(ctx context.Context) {
 	}
 	if len(items) == 0 {
 		r.err = fmt.Errorf("no results")
+		r.rec = append(r.rec, "")
 		return
 	}
+
 	link = items[0].Link
 	r.set(k, link)
 	r.rec = append(r.rec, items[0].Link)
@@ -148,7 +150,6 @@ func enqueueRecW(ctx context.Context, rx chan *RecW) {
 			recw.Wait()
 			if err := recw.err; err != nil {
 				errorf("unable to obtain link: %v", err)
-				recw.rec = append(recw.rec, "link not available")
 			}
 			if err := w.Write(recw.rec); err != nil {
 				errorf("unable to write record to stdout: %v", err)
@@ -181,6 +182,9 @@ func handleSSearch(ctx context.Context, gsc *google.SC, cache *redis.Client, in 
 
 	for {
 		rec, err := csvr.Read()
+		if err != nil && errors.Is(err, io.EOF) {
+			break
+		}
 		if err != nil {
 			errorf("unable to read input: %v", err)
 			return
