@@ -174,10 +174,6 @@ func handleSSearch(ctx context.Context, gsc *google.SC, cache *redis.Client, in 
 	sem := make(chan struct{}, maxcc)
 	tx := make(chan *RecW)
 
-	if cache == nil {
-		panic(fmt.Errorf("nil cache!"))
-	}
-
 	go enqueueRecW(ctx, tx)
 
 	for {
