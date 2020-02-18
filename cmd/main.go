@@ -159,7 +159,6 @@ func enqueueRecW(ctx context.Context, rx chan *RecW) {
 	}
 }
 
-// cache can be nil.
 func handleSSearch(ctx context.Context, gsc *google.SC, cache *redis.Client, in string, c int, opts ...func(url.Values)) {
 	r, err := openInputFile(in)
 	if err != nil {
@@ -193,14 +192,16 @@ func handleSSearch(ctx context.Context, gsc *google.SC, cache *redis.Client, in 
 			done:  make(chan bool),
 			cache: cache,
 		}
-		ctx, cancel := context.WithTimeout(ctx, time.Second*5)
-		defer cancel()
+
 		tx <- rw // Send item though channel to preserve ordering.
 		sem <- struct{}{}
 
 		go func(rw *RecW) {
 			defer func() { <-sem }()
-			rw.Run(ctx) // Execute task in a different routine.
+			_ctx, cancel := context.WithTimeout(context.Background(), time.Second*5)
+			defer cancel()
+
+			rw.Run(_ctx) // Execute task in a different routine.
 		}(rw)
 	}
 
