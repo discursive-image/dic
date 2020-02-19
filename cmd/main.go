@@ -230,8 +230,8 @@ func handleSSearch(ctx context.Context, gsc *google.SC, cache *redis.Client, in 
 }
 
 const (
-	envGoogleKey = "GOOGLE_SPEECH_KEY"
-	envGoogleCx  = "GOOGLE_SPEECH_CX"
+	envGoogleKey = "GOOGLE_SEARCH_KEY"
+	envGoogleCx  = "GOOGLE_SEARCH_CX"
 )
 
 func main() {
