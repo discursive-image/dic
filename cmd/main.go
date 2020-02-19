@@ -13,6 +13,7 @@ import (
 	"io"
 	"net/url"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"time"
 
@@ -20,8 +21,12 @@ import (
 	"github.com/jecoz/dic/google"
 )
 
+func logf(format string, args ...interface{}) {
+	fmt.Fprintf(os.Stderr, os.Args[0]+" * "+format+"\n", args...)
+}
+
 func errorf(format string, args ...interface{}) {
-	fmt.Fprintf(os.Stderr, os.Args[0]+" error: "+format+"\n", args...)
+	logf("error: "+format, args...)
 }
 
 func exitf(format string, args ...interface{}) {
@@ -139,23 +144,21 @@ func (r *RecW) Wait() {
 	return
 }
 
-func enqueueRecW(ctx context.Context, rx chan *RecW) {
+func enqueueRecW(rx chan *RecW, errc chan<- error) {
 	w := csv.NewWriter(os.Stdout)
-	for {
-		select {
-		case <-ctx.Done():
-			errorf("quitting record queue: %v", ctx.Err())
-			return
-		case recw := <-rx:
-			recw.Wait()
-			if err := recw.err; err != nil {
-				errorf("unable to obtain link: %v", err)
-			}
-			if err := w.Write(recw.rec); err != nil {
-				errorf("unable to write record to stdout: %v", err)
-			}
-			w.Flush()
+	for recw := range rx {
+		recw.Wait()
+		if err := recw.err; err != nil {
+			// This is a non critical error. The log is here to
+			// prevent records from being discarded silently.
+			errorf("unable to obtain link: %v", err)
+			continue
 		}
+		if err := w.Write(recw.rec); err != nil {
+			errc <- fmt.Errorf("unable to write record to stdout: %w", err)
+			return
+		}
+		w.Flush()
 	}
 }
 
@@ -166,23 +169,39 @@ func handleSSearch(ctx context.Context, gsc *google.SC, cache *redis.Client, in 
 	}
 	defer r.Close()
 
-	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
+	csvr := csv.NewReader(r)          // the csv input reader.
+	sem := make(chan struct{}, maxcc) // concurrency semaphore.
+	errc := make(chan error)          // error channel, used for error reporting from writer.
+	tx := make(chan *RecW)            // wrapped records transmitter.
+	defer close(tx)
 
-	csvr := csv.NewReader(r)
-	sem := make(chan struct{}, maxcc)
-	tx := make(chan *RecW)
-
-	go enqueueRecW(ctx, tx)
+	go enqueueRecW(tx, errc)
 
 	for {
+		if err := func() error {
+			select {
+			case <-ctx.Done():
+				// In case of context cancelation, close the reader first
+				// and let the current searched images finish.
+				return ctx.Err()
+			case err := <-errc:
+				// This is critical: we're no longer able to write to stdout.
+				return err
+			default:
+				return nil
+			}
+		}(); err != nil {
+			errorf("exiting input processing loop: %v", err)
+			break
+		}
+
 		rec, err := csvr.Read()
 		if err != nil && errors.Is(err, io.EOF) {
 			break
 		}
 		if err != nil {
 			errorf("unable to read input: %v", err)
-			return
+			break
 		}
 
 		rw := &RecW{
@@ -193,7 +212,7 @@ func handleSSearch(ctx context.Context, gsc *google.SC, cache *redis.Client, in 
 			cache: cache,
 		}
 
-		tx <- rw // Send item though channel to preserve ordering.
+		tx <- rw // send item though channel to preserve ordering.
 		sem <- struct{}{}
 
 		go func(rw *RecW) {
@@ -210,9 +229,14 @@ func handleSSearch(ctx context.Context, gsc *google.SC, cache *redis.Client, in 
 	}
 }
 
+const (
+	envGoogleKey = "GOOGLE_SPEECH_KEY"
+	envGoogleCx  = "GOOGLE_SPEECH_CX"
+)
+
 func main() {
-	k := flag.String("k", "", "Google API key.")
-	cx := flag.String("cx", "", "Google custom search engine ID.")
+	k := flag.String("k", os.Getenv(envGoogleKey), "Google API key.")
+	cx := flag.String("cx", os.Getenv(envGoogleCx), "Google custom search engine ID.")
 	q := flag.String("q", "", "Optional query to search for.")
 	t := flag.String("t", "undefined", "Image type to search for (clipart|face|lineart|news|photo).")
 	s := flag.String("s", "undefined", "Image size to search for (huge|icon|large|medium|small|xlarge|xxlarge).")
@@ -234,7 +258,17 @@ func main() {
 		}
 	}
 
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	sigc := make(chan os.Signal, 1)
+	signal.Notify(sigc, os.Interrupt)
+	go func() {
+		sig := <-sigc
+		logf("signal %v received, canceling", sig)
+		cancel()
+	}()
+
 	gsc := google.NewSC(*k, *cx)
 	if *q != "" {
 		handleQSearch(ctx, gsc, *q, google.FilterImgType(*t), google.FilterImgSize(*s))
