@@ -146,6 +146,7 @@ func (c *SC) SearchImages(ctx context.Context, q string, opts ...func(url.Values
 	v.Set("cx", c.Cx)
 	v.Set("searchType", "image")
 	v.Set("q", q)
+	v.Set("prettyPrint", "false")
 
 	url, err := url.Parse(baseURL)
 	if err != nil {
