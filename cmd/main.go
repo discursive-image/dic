@@ -11,13 +11,14 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net/http"
 	"net/url"
 	"os"
 	"os/signal"
-	"path/filepath"
+	"strings"
+	"sync"
 	"time"
 
-	"github.com/go-redis/redis/v7"
 	"github.com/jecoz/dic/google"
 )
 
@@ -61,52 +62,118 @@ func openInputFile(in string) (io.ReadCloser, error) {
 
 const maxcc int = 10
 
-type RecW struct {
+type touchedImage struct {
+	image   *google.ISR
+	checked bool
+	valid   bool
+}
+
+type imageRing struct {
+	all   []*touchedImage
+	index int
+}
+
+var fastClient = &http.Client{
+	Timeout: 2 * time.Second,
+}
+
+func discard(link string) bool {
+	resp, err := fastClient.Head(link)
+	if err != nil {
+		return true
+	}
+	resp.Body.Close()
+
+	if resp.StatusCode >= 400 {
+		return true
+	}
+	t := resp.Header.Get("content-type")
+	return !strings.Contains(t, "image")
+}
+
+func (ir *imageRing) next() *google.ISR {
+	if len(ir.all) == 0 {
+		return nil
+	}
+
+	// Lazily check images before returning them.
+
+	var ti *touchedImage
+	var found bool
+	var index int
+	for i := ir.index; i < len(ir.all); i = (i + 1) % (len(ir.all) - 1) {
+		ti = ir.all[i]
+		if !ti.checked {
+			ti.valid = !discard(ti.image.Link)
+		}
+		if ti.valid {
+			found = true
+			index = i
+			break
+		}
+	}
+	if !found {
+		return nil
+	}
+	ir.index = (index + 1) % (len(ir.all) - 1)
+	return ti.image
+}
+
+type ringCache struct {
+	sync.Mutex
+	m map[string]*imageRing
+}
+
+func newRingCache() *ringCache {
+	return &ringCache{
+		m: make(map[string]*imageRing),
+	}
+}
+
+func (c *ringCache) next(k string) (*google.ISR, bool) {
+	c.Lock()
+	defer c.Unlock()
+
+	ring, ok := c.m[k]
+	if !ok {
+		return nil, false
+	}
+	image := ring.next()
+	if image == nil {
+		// something is broken with this ring, delete it.
+		delete(c.m, k)
+		return nil, false
+	}
+	return image, true
+}
+
+func (c *ringCache) set(k string, results []*google.ISR) {
+	c.Lock()
+	defer c.Unlock()
+
+	all := make([]*touchedImage, len(results))
+	for i, v := range results {
+		all[i] = &touchedImage{
+			image: v,
+		}
+	}
+	c.m[k] = &imageRing{
+		all:   all,
+		index: 0,
+	}
+}
+
+type ImageRequest struct {
 	gsc   *google.SC
 	c     int
 	rec   []string
 	opts  []func(url.Values)
 	done  chan bool
 	err   error
-	cache *redis.Client
+	cache *ringCache
 }
 
-var keyPrefix = filepath.Base(os.Args[0])
-
-func makeKey(k string) string {
-	return keyPrefix + ":" + k
-}
-
-func (r *RecW) get(k string) (string, bool) {
-	if r.cache == nil {
-		return "", false
-	}
-
-	val, err := r.cache.Get(makeKey(k)).Result()
-	if err != nil && errors.Is(err, redis.Nil) {
-		// Key not set.
-		return "", false
-	}
-	if err != nil {
-		// Unexpected error.
-		errorf("unable to read from cache: %v", err)
-		return "", false
-	}
-	return val, true
-}
-
-func (r *RecW) set(k, v string) {
-	if r.cache == nil {
-		return
-	}
-	if err := r.cache.Set(makeKey(k), v, 0).Err(); err != nil {
-		errorf("unable to set cache value: %v", err)
-		return
-	}
-	return
-}
-
-func (r *RecW) Run(ctx context.Context) {
+func (r *ImageRequest) Run(ctx context.Context) {
 	defer func() { r.done <- true }()
 	if r.c >= len(r.rec) {
 		r.err = fmt.Errorf("tried to access column %d out of %d", r.c, len(r.rec))
@@ -116,9 +183,9 @@ func (r *RecW) Run(ctx context.Context) {
 	k := r.rec[r.c]
 
 	// Check if the cache contains the value.
-	link, ok := r.get(k)
+	image, ok := r.cache.next(k)
 	if ok {
-		r.rec = append(r.rec, link)
+		r.rec = append(r.rec, image.Link)
 		return
 	}
 
@@ -133,18 +200,23 @@ func (r *RecW) Run(ctx context.Context) {
 		r.rec = append(r.rec, "")
 		return
 	}
+	r.cache.set(k, items)
 
-	link = items[0].Link
-	r.set(k, link)
-	r.rec = append(r.rec, items[0].Link)
+	image, ok = r.cache.next(k)
+	if !ok {
+		r.err = fmt.Errorf("cache inconsistency")
+		r.rec = append(r.rec, "")
+		return
+	}
+	r.rec = append(r.rec, image.Link)
 }
 
-func (r *RecW) Wait() {
+func (r *ImageRequest) Wait() {
 	<-r.done
 	return
 }
 
-func enqueueRecW(rx chan *RecW, errc chan<- error) {
+func enqueueImageRequest(rx chan *ImageRequest, errc chan<- error) {
 	w := csv.NewWriter(os.Stdout)
 	for recw := range rx {
 		recw.Wait()
@@ -162,7 +234,7 @@ func enqueueRecW(rx chan *RecW, errc chan<- error) {
 	}
 }
 
-func handleSSearch(ctx context.Context, gsc *google.SC, cache *redis.Client, in string, c int, opts ...func(url.Values)) {
+func handleSSearch(ctx context.Context, gsc *google.SC, in string, c int, opts ...func(url.Values)) {
 	r, err := openInputFile(in)
 	if err != nil {
 		exitf(err.Error())
@@ -172,10 +244,11 @@ func handleSSearch(ctx context.Context, gsc *google.SC, cache *redis.Client, in 
 	csvr := csv.NewReader(r)          // the csv input reader.
 	sem := make(chan struct{}, maxcc) // concurrency semaphore.
 	errc := make(chan error)          // error channel, used for error reporting from writer.
-	tx := make(chan *RecW)            // wrapped records transmitter.
+	tx := make(chan *ImageRequest)    // wrapped records transmitter.
+	cache := newRingCache()
 	defer close(tx)
 
-	go enqueueRecW(tx, errc)
+	go enqueueImageRequest(tx, errc)
 
 	for {
 		if err := func() error {
@@ -204,7 +277,7 @@ func handleSSearch(ctx context.Context, gsc *google.SC, cache *redis.Client, in 
 			break
 		}
 
-		rw := &RecW{
+		rw := &ImageRequest{
 			c:     c,
 			rec:   rec,
 			gsc:   gsc,
@@ -215,7 +288,7 @@ func handleSSearch(ctx context.Context, gsc *google.SC, cache *redis.Client, in 
 		tx <- rw // send item though channel to preserve ordering.
 		sem <- struct{}{}
 
-		go func(rw *RecW) {
+		go func(rw *ImageRequest) {
 			defer func() { <-sem }()
 			_ctx, cancel := context.WithTimeout(context.Background(), time.Second*5)
 			defer cancel()
@@ -242,21 +315,7 @@ func main() {
 	s := flag.String("s", "undefined", "Image size to search for (huge|icon|large|medium|small|xlarge|xxlarge).")
 	i := flag.String("i", "-", "Input file containing the words to retrive the image of. csv encoded, use the \"c\" flag to select the proper column. If \"q\" is present, this flag is ignored. Use - for stdin.")
 	c := flag.Int("c", 3, "If \"i\" is used, selects the column which will be used as word input.")
-	raddr := flag.String("ra", "", "Redis address to connect to. If available, will be used as link cache.")
-	rdb := flag.Int("rdb", 1, "Redis DB.")
 	flag.Parse()
-
-	var client *redis.Client
-	if *raddr != "" {
-		client = redis.NewClient(&redis.Options{
-			Addr:     *raddr,
-			Password: "",
-			DB:       *rdb,
-		})
-		if _, err := client.Ping().Result(); err != nil {
-			exitf("unable to connect to redis server: %v", err)
-		}
-	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -273,6 +332,6 @@ func main() {
 	if *q != "" {
 		handleQSearch(ctx, gsc, *q, google.FilterImgType(*t), google.FilterImgSize(*s))
 	} else {
-		handleSSearch(ctx, gsc, client, *i, *c, google.FilterImgType(*t), google.FilterImgSize(*s))
+		handleSSearch(ctx, gsc, *i, *c, google.FilterImgType(*t), google.FilterImgSize(*s))
 	}
 }
