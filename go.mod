@@ -1,3 +1,3 @@
-module github.com/jecoz/dic
+module github.com/discursive-image/dic
 
 go 1.13
