@@ -19,7 +19,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/jecoz/dic/google"
+	"github.com/discursive-image/dic/google"
 )
 
 func logf(format string, args ...interface{}) {
