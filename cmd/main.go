@@ -15,6 +15,7 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -84,11 +85,21 @@ func discard(link string) bool {
 	}
 	resp.Body.Close()
 
+	// Discard we do not get a positive HTTP response.
 	if resp.StatusCode >= 400 {
 		return true
 	}
+	// If content type is not image, discard.
 	t := resp.Header.Get("content-type")
-	return !strings.Contains(t, "image")
+	if !strings.Contains(t, "image") {
+		return true
+	}
+	// If content-length is not greater than 0, discard.
+	l, err := strconv.Atoi(resp.Header.Get("content-length"))
+	if err != nil || l <= 0 {
+		return true
+	}
+	return false
 }
 
 func (ir *imageRing) next() *google.ISR {
