@@ -1,10 +1,16 @@
-# SPDX-FileCopyrightText: 2020 Jecoz
-#
-# SPDX-License-Identifier: MIT
+export BINDIR ?= $(abspath bin)
 
-dic: cmd/main.go
-	go build -v -o bin/$@ $^
-test:
-	go test ./...
-format:
-	go fmt ./...
+PREFIX :=
+SRC := google/*.go cmd/*/*.go
+TARGETS := dic
+
+BINNAMES := $(addprefix $(PREFIX), $(TARGETS))
+BINS := $(addprefix $(BINDIR)/, $(BINNAMES))
+
+all: $(BINS)
+test: $(SRC); go test ./...
+clean:; rm -rf $(BINDIR)/$(PREFIX)*
+
+$(BINDIR)/$(PREFIX)%: $(SRC); go build -o $@ cmd/$*/main.go
+$(BINS): | $(BINDIR)
+$(BINDIR):; mkdir -p $(BINDIR)

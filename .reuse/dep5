@@ -1,8 +1,0 @@
-Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
-Upstream-Name: dic
-Upstream-Contact: Daniel Morandini <danielmorandini@me.com>
-Source: github.com/jecoz/dic
-
-Files: examples/*
-Copyright: 2020 Daniel Morandini <danielmorandini@me.com>
-License: MIT
